@@ -29,8 +29,9 @@ else
     # and upload ~5 GB, retries included) and the time the job has already
     # spent restoring it.
     _reserve=3600
-    _elapsed=$(( $(date +%s) - ${_job_start:-$(date +%s)} ))
-    _task_timeout=$(( 6 * 3600 - _reserve - _elapsed ))
+    _job_start=${_job_start:-$(date +%s)}
+    remaining() { echo $(( 6 * 3600 - _reserve - ($(date +%s) - _job_start) )); }
+    _task_timeout=$(remaining)
     if [ "${_task_timeout}" -lt 600 ]; then
         echo "only ${_task_timeout}s left after restoring the tree" >&2
         exit 1
@@ -42,6 +43,15 @@ else
     # targets, so one 13h run surfaces every broken patch at once.
     timeout -k 5m -s INT "${_task_timeout}"s ninja -C out/Default -k 0 chrome chromedriver
     rc=$?
+    # One retry within the time left, as cuttle does: some upstream edges race
+    # their generators (at 154, devtools' esbuild bundle reading
+    # skills/*.skill.js before generate_skills writes them). A race clears on
+    # the retry; a real compile error fails again in seconds.
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$(remaining)" -gt 600 ]; then
+        echo "ninja failed (rc=$rc); retrying once to rule out an ordering race"
+        timeout -k 5m -s INT "$(remaining)"s ninja -C out/Default -k 0 chrome chromedriver
+        rc=$?
+    fi
     set -e
 
     if [ "${_gha_final:-}" != "true" ] && [ "$rc" -eq 124 ]; then

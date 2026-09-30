@@ -272,5 +272,8 @@ compile_patched_sources() {
                    echo "${_shared_dest}/${f##*/}"
                done) \
              | grep -E '\.(cc|c|mm)$' | LC_ALL=C sort -u)
-    ninja -C out/Default -k 0 "${targets[@]}"
+    # One retry, as cuttle does: at 154 devtools' esbuild bundle can read
+    # skills/*.skill.js before generate_skills writes them. A retry clears such
+    # a race and fails a real compile error again in seconds.
+    ninja -C out/Default -k 0 "${targets[@]}" || ninja -C out/Default -k 0 "${targets[@]}"
 }
