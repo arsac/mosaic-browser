@@ -185,24 +185,6 @@ setup_build_inputs() {
     local cipd="${_depot_tools}/cipd"
     cd "${_src_dir}"
 
-    # ensure, not install: the tarball already puts files in some of these
-    # directories (clang-format in buildtools/linux64), and install refuses a
-    # non-empty directory it did not create. ensure adopts it and leaves the
-    # files it does not manage in place.
-    local gn_rev
-    gn_rev=$(grep "'gn_version'" DEPS | sed -E "s/.*git_revision:([a-f0-9]+).*/\1/" | head -1)
-    echo "gn/gn/linux-amd64 git_revision:${gn_rev}" \
-        | "${cipd}" ensure -root buildtools/linux64 -ensure-file -
-
-    local go_ver
-    go_ver=$(grep -E "'dawn_go_version'" third_party/dawn/DEPS | sed -E "s/.*'(version:[^']+)'.*/\1/" | head -1)
-    [ -n "${go_ver}" ] || { echo "no dawn_go_version in third_party/dawn/DEPS" >&2; exit 1; }
-    echo "infra/3pp/tools/go/linux-amd64 ${go_ver}" \
-        | "${cipd}" ensure -root third_party/dawn/tools/golang/linux-amd64 -ensure-file -
-
-    echo "infra/3pp/tools/gperf/linux-amd64 version:3@3.2" \
-        | "${cipd}" ensure -root third_party/gperf/cipd -ensure-file -
-
     # Written by gclient runhooks, which the tarball's export does not keep.
     # Replaced only on a content change, so a resumed tree is not regenerated.
     cat > "${_build_dir}/gclient_args.gni" <<'GNI'
@@ -279,7 +261,16 @@ GNI
     python3 tools/clang/scripts/update.py
     [ -x third_party/node/linux/node-linux-x64/bin/node ] || bash third_party/node/update_node_binaries
 
+    # gn, the Dawn Go toolchain and gperf come from here too, at the versions
+    # DEPS pins. A recursedep's DEPS missing from the tree would be skipped
+    # silently, so the tools the build cannot do without are checked by name.
     python3 "${_root}/scripts/fetch-cipd-deps.py" "${_src_dir}" "${cipd}"
+    local tool
+    for tool in buildtools/linux64/gn \
+                third_party/dawn/tools/golang/linux-amd64/bin/go \
+                third_party/gperf/cipd/bin/gperf; do
+        [ -x "${tool}" ] || { echo "${tool} missing after fetching the DEPS packages" >&2; exit 1; }
+    done
 }
 
 write_gn_args() {
