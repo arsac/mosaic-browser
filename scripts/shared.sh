@@ -245,6 +245,28 @@ GNI
     cmp -s "${_build_dir}/gclient_args.gni" build/config/gclient_args.gni \
         || cp "${_build_dir}/gclient_args.gni" build/config/gclient_args.gni
 
+    # Parity with cuttle's build, whose --nohooks checkout lacks the version
+    # stamps and so gets placeholders (build-linux.sh stage 5). The tarball
+    # ships the real ones, which are the better end state (deterministic, and
+    # what official Chrome embeds), but the first builds match cuttle in
+    # everything that can be matched. Written once, so a resumed tree is not
+    # re-stamped into rebuilding.
+    if ! grep -q -- '-stub$' build/util/LASTCHANGE 2>/dev/null; then
+        echo "LASTCHANGE=$(date -u +%Y-%m-%dT%H:%M:%S)-stub" > build/util/LASTCHANGE
+        date +%s > build/util/LASTCHANGE.committime
+    fi
+    local stamp header line
+    for stamp in gpu/config/gpu_lists_version.h:GPU_LISTS_VERSION \
+                 skia/ext/skia_commit_hash.h:SKIA_COMMIT_HASH \
+                 skia/skia_commit_hash.h:SKIA_COMMIT_HASH; do
+        header=${stamp%%:*}
+        line="#define ${stamp##*:} \"0000000000000000000000000000000000000000\""
+        if [ "$(cat "${header}" 2>/dev/null)" != "${line}" ]; then
+            mkdir -p "$(dirname "${header}")"
+            echo "${line}" > "${header}"
+        fi
+    done
+
     # Both scripts skip the download when their stamp matches.
     python3 tools/rust/update_rust.py
     python3 tools/clang/scripts/update.py

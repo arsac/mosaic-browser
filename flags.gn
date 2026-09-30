@@ -1,7 +1,7 @@
 # Appended to ungoogled-chromium's flags.gn (minus the keys set again here) to
 # form args.gn. This is cuttle's x64 configuration (build-linux.sh stage 6),
 # kept identical so the binary matches the one the stealth series is validated
-# on; only its compiler-cache flags are left out, which do not change codegen.
+# on. Only cc_wrapper is left out: we run no compiler cache.
 is_debug = false
 is_official_build = true
 use_thin_lto = false
@@ -21,3 +21,7 @@ target_cpu = "x64"
 use_sysroot = false
 safe_browsing_mode = 0
 chrome_pgo_phase = 0
+# Parity: cuttle's releases build with sccache, which sets these two. Clang
+# header modules are a parse optimization, documented as emitting the same code.
+use_clang_modules = false
+use_libcxx_modules = false
