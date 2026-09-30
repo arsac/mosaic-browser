@@ -1,0 +1,69 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    ":semanticCommits",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigestsToSemver",
+  ],
+  // Renovate merges only after every check on the pull request passed, which
+  // for build inputs includes the prep-only build (every pin, patch and gn
+  // gen). Native GitHub auto-merge would not wait without branch protection.
+  platformAutomerge: false,
+  customManagers: [
+    {
+      customType: "regex",
+      description: "versions.env: a tag or branch and the commit it resolves to, bumped together",
+      managerFilePatterns: ["/^versions\\.env$/"],
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n[A-Z_]+=(?<currentValue>\\S+)\\n[A-Z_]+_COMMIT=(?<currentDigest>[0-9a-f]{40})",
+      ],
+    },
+  ],
+  packageRules: [
+    {
+      description: "ungoogled-chromium: Chromium's four-part version and ungoogled's revision. The tarball pin follows the tag.",
+      matchPackageNames: ["ungoogled-software/ungoogled-chromium"],
+      versioning: "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\.(?<build>\\d+)-(?<revision>\\d+)$",
+      postUpgradeTasks: {
+        commands: ["scripts/update-tarball-pin.sh"],
+        fileFilters: ["versions.env"],
+        executionMode: "branch",
+      },
+    },
+    {
+      description: "A security respin within the Chromium major: the stealth series still applies, and the PR gate proves it.",
+      matchPackageNames: ["ungoogled-software/ungoogled-chromium"],
+      matchUpdateTypes: ["minor", "patch"],
+      automerge: true,
+    },
+    {
+      description: "A new Chromium major needs the stealth series rebased; it arrives with the cuttle release built on it.",
+      matchPackageNames: ["ungoogled-software/ungoogled-chromium"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
+    {
+      description: "The stealth series: synced into patches/stealth so the C++ diff is reviewed in the pull request. Never automerged.",
+      matchPackageNames: ["glim-sh/cuttle"],
+      versioning: "regex:^browser-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\.(?<build>\\d+)-(?<revision>\\d+)$",
+      automerge: false,
+      postUpgradeTasks: {
+        commands: ["scripts/sync-stealth-patches.sh"],
+        fileFilters: ["versions.env", "patches/stealth/**"],
+        executionMode: "branch",
+      },
+    },
+    {
+      description: "depot_tools moves daily and only supplies the cipd client: take it weekly.",
+      matchPackageNames: ["https://chromium.googlesource.com/chromium/tools/depot_tools.git"],
+      schedule: ["before 6am on monday"],
+      automerge: true,
+    },
+    {
+      description: "Action and base image digests",
+      matchManagers: ["github-actions", "dockerfile"],
+      automerge: true,
+    },
+  ],
+}

@@ -1,0 +1,59 @@
+name: tag
+
+# Starts a release build when a merge changes what the binary is built from:
+# the ungoogled-chromium pin, the source tarball or the stealth series. Other
+# pins (depot_tools, action and image digests) do not cost a release build.
+# The tag is created with the bot's token: one created with GITHUB_TOKEN would
+# not trigger the build workflow.
+on:
+  push:
+    branches: [main]
+    paths: [versions.env]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Did the build inputs change?
+        id: changed
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          keys='^(UC_TAG|UC_COMMIT|CHROMIUM_TARBALL_SHA256|CUTTLE_TAG|CUTTLE_COMMIT)='
+          if [ "$(git show "${BEFORE}:versions.env" | grep -E "${keys}")" = "$(grep -E "${keys}" versions.env)" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint bot token
+        if: steps.changed.outputs.release == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      # <UC_TAG>.<n>, n one past the highest release already cut for this tag.
+      - name: Tag the release
+        if: steps.changed.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          . versions.env
+          n=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${UC_TAG}." --jq '.[].ref' \
+                | sed -nE "s|^refs/tags/${UC_TAG//./\\.}\\.([0-9]+)$|\\1|p" | sort -n | tail -1)
+          tag="${UC_TAG}.$(( ${n:-0} + 1 ))"
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${tag}" -f sha="${GITHUB_SHA}" > /dev/null
+          echo "Tagged ${tag} at ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"

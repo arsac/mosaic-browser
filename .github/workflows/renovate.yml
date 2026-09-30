@@ -1,0 +1,51 @@
+name: renovate
+
+# Self-hosted Renovate with the bot app's token: its pull requests trigger the
+# prep-only build as a check, which a GITHUB_TOKEN-authored one would not.
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: Renovate log level
+        type: choice
+        options: [debug, info, warn, error]
+        default: info
+      dryRun:
+        description: Dry-run mode (no pull requests or commits)
+        type: choice
+        options: [disabled, extract, lookup, full]
+        default: disabled
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Mint bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Renovate
+        uses: renovatebot/github-action@f3a31a786096ba6b40d0f0ffe11a494ef73bfa7c # v46.3.4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+        env:
+          LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
+          RENOVATE_DRY_RUN: ${{ inputs.dryRun == 'disabled' && 'null' || inputs.dryRun }}
+          RENOVATE_PLATFORM: github
+          RENOVATE_AUTODISCOVER: "false"
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          # The only commands post-upgrade tasks may run (.renovaterc.json5).
+          RENOVATE_ALLOWED_COMMANDS: '["^scripts/update-tarball-pin\\.sh$", "^scripts/sync-stealth-patches\\.sh$"]'
