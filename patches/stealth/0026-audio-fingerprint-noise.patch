@@ -1,0 +1,96 @@
+# cuttle stealth-chromium patch #26 - seeded gain on OfflineAudioContext output.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
+#
+# Every Chrome on the same OS, CPU family and version renders the classic audio
+# fingerprint (triangle oscillator into a DynamicsCompressor) to the same
+# samples, so its sum links every launch. This scales the samples an
+# OfflineAudioContext renders by a per-seed gain of 1 +/- (1e-7 to 4e-7): the
+# same seed always yields the same sum, and different seeds differ.
+#
+# The gain is applied once, where the render thread copies each quantum into
+# the destination buffer, and is purely multiplicative. That keeps the three
+# properties CreepJS tests, all of which the previous version (an additive
+# offset on every AudioBuffer read) broke:
+#   - silence stays exactly zero (hasFakeAudio renders a 0 Hz oscillator and
+#     expects only zeros);
+#   - getChannelData and copyFromChannel return identical samples, because the
+#     data itself is scaled, not a read path;
+#   - an AudioBuffer built by script reads back exactly what was written (the
+#     write/readback trap), because only rendered output is touched.
+#
+# Idea from chromiumfish's audio isolation (MIT, Copyright (c) 2026 Arman
+# Hossain), without its additive per-sample term, which puts noise into silence.
+# The code here is written for cuttle.
+#
+# Gated on --fingerprint, off with --fingerprint-noise=false.
+--- a/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
++++ b/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
+@@ -6,10 +6,13 @@
+ 
+ #include <algorithm>
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/trace_event/typed_macros.h"
+ #include "media/base/audio_bus.h"
+ #include "media/base/audio_glitch_info.h"
++#include "third_party/blink/common/cuttle_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_seed.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_node_input.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_node_output.h"
+@@ -27,7 +30,28 @@
+ #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+ 
+ namespace blink {
++
++namespace {
++
++// cuttle-stealth #26: per-seed gain for everything an OfflineAudioContext
++// renders, or exactly 1.0 when noise is off. Purely multiplicative, so silence
++// stays exactly zero. A deviation of 1e-7 to 4e-7 exceeds half a float32 ulp,
++// so every non-zero sample moves, and shifts a rendered sum by about as much
++// as real Chrome installs differ from one another.
++double CuttleOfflineAudioScale() {
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
++          cuttle::switches::kFingerprint) ||
++      !cuttle::seed::NoiseEnabled()) {
++    return 1.0;
++  }
++  const uint64_t h = cuttle::seed::Hash("audio.offline");
++  const double magnitude =
++      1.0e-7 + static_cast<double>(h & 0xFFFFu) / 65535.0 * 3.0e-7;
++  return (h & 0x10000u) ? 1.0 + magnitude : 1.0 - magnitude;
++}
+ 
++}  // namespace
++
+ OfflineAudioDestinationHandler::OfflineAudioDestinationHandler(
+     AudioNode& node,
+     unsigned number_of_channels,
+@@ -177,6 +201,7 @@
+   }
+ 
+   unsigned number_of_channels = shared_render_target_->numberOfChannels();
++  const double cuttle_scale = CuttleOfflineAudioScale();
+ 
+   // If there is more to process and there is no suspension at the moment,
+   // do continue to render quanta. Then calling OfflineAudioContext.resume()
+@@ -202,6 +227,15 @@
+                                     render_bus_->Channel(channel_index)
+                                         ->Span()
+                                         .first(frames_available_to_copy)));
++      // cuttle-stealth #26: scale the copy, never render_bus_ itself, whose
++      // silent channels may not be backed by writable memory.
++      if (cuttle_scale != 1.0) {
++        for (float& sample :
++             shared_render_target_->ChannelSpan(channel_index)
++                 .subspan(frames_processed_, frames_available_to_copy)) {
++          sample = static_cast<float>(sample * cuttle_scale);
++        }
++      }
+     }
+ 
+     frames_processed_ += frames_available_to_copy;

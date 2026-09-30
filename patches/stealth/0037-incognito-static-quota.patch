@@ -1,0 +1,19 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# cuttle-stealth-chromium patch #37 — both incognito quota features enabled
+# Source: chromium 154.0.8037.57 storage/browser/quota/quota_features.cc
+# Idea: ungoogled ships kIncognitoStaticStorageQuota ("avoid fingerprinting
+# and incognito detection" per its own description) and kIncreaseIncognitoStorageQuota,
+# both disabled by default. Enable both. Upstream enables kIncognitoStaticStorageQuota
+# by default since 154, so only kIncreaseIncognitoStorageQuota is patched.
+diff --git a/storage/browser/quota/quota_features.cc b/storage/browser/quota/quota_features.cc
+--- a/storage/browser/quota/quota_features.cc
++++ b/storage/browser/quota/quota_features.cc
+@@ -43,7 +43,7 @@
+ 
+ BASE_FEATURE(kIncreaseIncognitoStorageQuota,
+              "IncreaseIncognitoStorageQuota",
+-             base::FEATURE_DISABLED_BY_DEFAULT);
++             base::FEATURE_ENABLED_BY_DEFAULT);  // cuttle-stealth: bigger quota in incognito
+ 
+ }  // namespace features
+ }  // namespace storage

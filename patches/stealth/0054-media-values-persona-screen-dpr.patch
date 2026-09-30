@@ -1,0 +1,187 @@
+# cuttle stealth-chromium patch #54 - media queries and DPR read the persona.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/core/css/media_values.cc
+#   third_party/blink/renderer/core/dom/document.cc
+#
+# Patches #11 and #14 spoof screen.width/height and window.devicePixelRatio,
+# but CSS media evaluation kept reading the real display. That let anyone
+# catch the spoof with two lines, and CreepJS does exactly this:
+#   matchMedia(`(device-width: ${screen.width}px) and
+#               (device-height: ${screen.height}px)`).matches  -> false
+#   matchMedia(`(resolution: ${devicePixelRatio}dppx)`).matches -> false
+# reported as the lies "Screen: failed matchMedia" (both personas) and
+# "Window.devicePixelRatio: lied dpr" (macOS only - the Windows persona
+# claims DPR 1, which already matches the container).
+#
+# MediaValuesDynamic and MediaValuesCached both funnel through the static
+# MediaValues::Calculate* helpers, so patching the three helpers covers every
+# media-query path, cached and live.
+#
+# Document::DevicePixelRatio() is patched as well, so srcset / image-set()
+# selection, the DPR + Sec-CH-DPR client hints and the resource-width hint all
+# agree with the number JS reports. Without it, patching MediaValues alone
+# would make the preload scanner pick the 2x candidate while HTMLImageElement
+# picks 1x - a double fetch and a console warning that is its own tell.
+#
+# Deliberately NOT patched: LocalFrame::DevicePixelRatio(). It additionally
+# converts IME bounds, autoscroll positions and highlight hit points between
+# CSS and device pixels; lying there puts input at half coordinates. The two
+# seams above cover every value that is REPORTED or SELECTED ON, and none that
+# geometry or raster depends on.
+#
+# Layout does move on the macOS persona, in two places that now match a real
+# retina Mac: <input type=date> sub-field width (date_time_field_element.cc
+# scales padding by DPR) and fenced-frame frozen size. Canvas is unaffected -
+# Document::DevicePixelRatio() reaches it only for the broken-canvas icon.
+#
+# The macOS persona also reports the display a real Apple Silicon Mac has:
+# color-gamut p3, dynamic-range high and (color: 10). ui/display/mac/
+# screen_mac.mm derives HDR, 10 bits per component and screen.colorDepth 30
+# from one condition, EDR headroom above 1, so these move together with patch
+# #15's colorDepth. Even SDR laptop panels report that headroom - the file
+# carves Intel built-ins out of HDR by hand for exactly that reason, and has no
+# such carve-out on arm64. Measured on real Chrome 154 / MacBook Pro: p3 true,
+# rec2020 false, dynamic-range high true, (color: 10), colorDepth 30. A
+# DevTools gamut override still wins.
+diff --git a/third_party/blink/renderer/core/css/media_values.cc b/third_party/blink/renderer/core/css/media_values.cc
+--- a/third_party/blink/renderer/core/css/media_values.cc
++++ b/third_party/blink/renderer/core/css/media_values.cc
+@@ -4,6 +4,10 @@
+ 
+ #include "third_party/blink/renderer/core/css/media_values.h"
+ 
++#include "base/command_line.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
++#include "chrome/common/cuttle_seed.h"
++
+ #include "third_party/blink/public/common/css/scripting.h"
+ #include "third_party/blink/renderer/core/css/css_resolution_units.h"
+ #include "third_party/blink/renderer/core/css/css_to_length_conversion_data.h"
+@@ -33,6 +37,22 @@
+ 
+ namespace blink {
+ 
++namespace {
++
++// cuttle-stealth #54: a real Apple Silicon Mac's built-in panel is Display P3
++// with EDR headroom, which ui/display/mac/screen_mac.mm turns into
++// color-gamut: p3, dynamic-range: high and 10 bits per component (the same
++// condition that makes screen.colorDepth 30, patch #15). The Linux container
++// reports an sRGB, SDR, 8-bit display. Memoized: media queries evaluate often.
++bool CuttlePersonaIsMacOS() {
++  static const bool kIsMacOS =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "macos";
++  return kIsMacOS;
++}
++
++}  // namespace
++
+ ForcedColors CSSValueIDToForcedColors(CSSValueID id) {
+   switch (id) {
+     case CSSValueID::kActive:
+@@ -164,26 +184,16 @@
+ 
+ int MediaValues::CalculateDeviceWidth(LocalFrame* frame) {
+   DCHECK(frame && frame->View() && frame->GetSettings() && frame->GetPage());
+-  const display::ScreenInfo& screen_info =
+-      frame->GetPage()->GetChromeClient().GetScreenInfo(*frame);
+-  int device_width = screen_info.rect.width();
+-  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+-    device_width = static_cast<int>(
+-        lroundf(device_width * screen_info.device_scale_factor));
+-  }
+-  return device_width;
++  // cuttle-stealth #54: report the persona screen, so @media (device-width)
++  // cannot disagree with screen.width (patch #11). Unconditional, matching
++  // #11 - the seed defaults apply even with no --fingerprint-screen-width.
++  return static_cast<int>(cuttle::seed::Screen().width);
+ }
+ 
+ int MediaValues::CalculateDeviceHeight(LocalFrame* frame) {
+   DCHECK(frame && frame->View() && frame->GetSettings() && frame->GetPage());
+-  const display::ScreenInfo& screen_info =
+-      frame->GetPage()->GetChromeClient().GetScreenInfo(*frame);
+-  int device_height = screen_info.rect.height();
+-  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+-    device_height = static_cast<int>(
+-        lroundf(device_height * screen_info.device_scale_factor));
+-  }
+-  return device_height;
++  // cuttle-stealth #54: see CalculateDeviceWidth above.
++  return static_cast<int>(cuttle::seed::Screen().height);
+ }
+ 
+ bool MediaValues::CalculateStrictMode(LocalFrame* frame) {
+@@ -193,12 +203,20 @@
+ }
+ 
+ float MediaValues::CalculateDevicePixelRatio(LocalFrame* frame) {
++  // cuttle-stealth #54: the persona ratio, so @media (resolution) cannot
++  // disagree with window.devicePixelRatio (patch #14). 0 means no persona.
++  if (double dpr = cuttle::seed::DevicePixelRatio(); dpr != 0) {
++    return static_cast<float>(dpr);
++  }
+   return frame->DevicePixelRatio();
+ }
+ 
+ bool MediaValues::CalculateDeviceSupportsHDR(LocalFrame* frame) {
+   DCHECK(frame);
+   DCHECK(frame->GetPage());
++  if (CuttlePersonaIsMacOS()) {
++    return true;
++  }
+   return frame->GetPage()
+       ->GetChromeClient()
+       .GetScreenInfo(*frame)
+@@ -213,6 +231,9 @@
+   if (screen_info.is_monochrome) {
+     return 0;
+   }
++  if (CuttlePersonaIsMacOS()) {
++    return 10;
++  }
+   return screen_info.depth_per_component;
+ }
+ 
+@@ -389,6 +410,9 @@
+       frame->GetPage()->GetMediaFeatureOverrides();
+   std::optional<ColorSpaceGamut> override_value =
+       overrides ? overrides->GetColorGamut() : std::nullopt;
++  if (!override_value && CuttlePersonaIsMacOS()) {
++    return ColorSpaceGamut::P3;
++  }
+   return override_value.value_or(color_space_utilities::GetColorSpaceGamut(
+       frame->GetPage()->GetChromeClient().GetScreenInfo(*frame)));
+ }
+diff --git a/third_party/blink/renderer/core/dom/document.cc b/third_party/blink/renderer/core/dom/document.cc
+--- a/third_party/blink/renderer/core/dom/document.cc
++++ b/third_party/blink/renderer/core/dom/document.cc
+@@ -29,6 +29,8 @@
+ 
+ #include "third_party/blink/renderer/core/dom/document.h"
+ 
++#include "chrome/common/cuttle_seed.h"
++
+ #include <algorithm>
+ #include <memory>
+ #include <optional>
+@@ -9202,6 +9204,17 @@
+ }
+ 
+ float Document::DevicePixelRatio() const {
++  // cuttle-stealth #54: this ratio drives srcset and image-set() selection,
++  // the DPR / Sec-CH-DPR client hints and the resource-width hint, so none of
++  // them can disagree with window.devicePixelRatio (patch #14).
++  //
++  // Deliberately NOT applied to LocalFrame::DevicePixelRatio(), which also
++  // converts IME bounds, autoscroll positions and highlight hit points
++  // between CSS and device pixels - those must keep reading the real display
++  // or input lands at half coordinates.
++  if (double dpr = cuttle::seed::DevicePixelRatio(); dpr != 0) {
++    return static_cast<float>(dpr);
++  }
+   return GetFrame() ? GetFrame()->DevicePixelRatio() : 1.0;
+ }
+ 

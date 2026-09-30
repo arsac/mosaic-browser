@@ -1,0 +1,149 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# cuttle-stealth-chromium patch #48 — Permissions API default = "prompt"
+# Source: chromium 151.0.7922.137
+#   third_party/blink/renderer/modules/permissions/permission_status_listener.cc
+#   third_party/blink/renderer/modules/permissions/permission_status_listener.h
+# Idea: automation can leave promptable permissions "denied" (CDP
+# Browser.grantPermissions denies every type it does not grant). Bot detectors
+# flag that; "prompt" matches a fresh real Chrome profile before the user
+# decides. Scoped to secure contexts not cross-origin to the top-level page:
+# stock Chrome genuinely denies everywhere else, and so must we.
+#
+# 151 rebase: PermissionStatusListener::status_ changed from a plain enum
+# (MojoPermissionStatus) to a mojo StructPtr (MojoPermissionStatusWithDetails =
+# PermissionStatusWithDetailsPtr). The helper therefore MUTATES the StructPtr in
+# place instead of taking and returning it by value: a StructPtr is move-only, so
+# round-tripping it through a return type fights the ownership model. Mutating
+# the incoming status before the Equals() compare also means observers receive
+# the already-normalised status_.Clone() with no further change needed.
+diff --git a/third_party/blink/renderer/modules/permissions/permission_status_listener.cc b/third_party/blink/renderer/modules/permissions/permission_status_listener.cc
+--- a/third_party/blink/renderer/modules/permissions/permission_status_listener.cc
++++ b/third_party/blink/renderer/modules/permissions/permission_status_listener.cc
+@@ -4,15 +4,79 @@
+ 
+ #include "third_party/blink/renderer/modules/permissions/permission_status_listener.h"
+ 
++#include "base/command_line.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
+ #include "mojo/public/cpp/bindings/remote.h"
+ #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_permission_state.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
++#include "third_party/blink/renderer/core/frame/local_dom_window.h"
++#include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/modules/permissions/permissions.h"
+ 
+ namespace blink {
+ 
++namespace {
++
++bool CuttlePermissionPromptDefaultEnabled() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  return cl->HasSwitch(cuttle::switches::kFingerprint) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintBrand) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintBrandVersion);
++}
++
++bool CuttlePromptablePermission(
++    const mojom::blink::PermissionDescriptor& descriptor) {
++  switch (descriptor.name) {
++    case mojom::blink::PermissionName::NOTIFICATIONS:
++    case mojom::blink::PermissionName::GEOLOCATION:
++    case mojom::blink::PermissionName::AUDIO_CAPTURE:
++    case mojom::blink::PermissionName::VIDEO_CAPTURE:
++    case mojom::blink::PermissionName::CLIPBOARD_READ:
++    case mojom::blink::PermissionName::CLIPBOARD_WRITE:
++      return true;
++    default:
++      return false;
++  }
++}
++
++// Stock Chrome denies these outright in insecure contexts and in frames
++// cross-origin to the top-level page (permissions policy / embedding-origin
++// checks), so a DENIED there is genuine and must pass through unchanged.
++bool CuttlePromptDefaultAppliesTo(ExecutionContext* context) {
++  if (!context || !context->IsSecureContext()) {
++    return false;
++  }
++  auto* window = DynamicTo<LocalDOMWindow>(context);
++  if (!window) {
++    return true;
++  }
++  LocalFrame* frame = window->GetFrame();
++  return frame && !frame->IsCrossOriginToOutermostMainFrame();
++}
++
++// cuttle-stealth #48: in fingerprint mode, automation can leave promptable
++// permissions DENIED before the user has made a decision (CDP
++// Browser.grantPermissions denies every type it does not grant). Normalise
++// DENIED -> ASK so the Permissions API reads like a fresh real profile, but
++// only where a fresh profile would report ASK. Mutates in place: see the
++// 151-rebase note at the top of this patch.
++void CuttleApplyPermissionPromptDefault(
++    mojom::blink::PermissionStatusWithDetailsPtr& status,
++    const mojom::blink::PermissionDescriptor& descriptor,
++    ExecutionContext* context) {
++  if (status && status->status == mojom::blink::PermissionStatus::DENIED &&
++      CuttlePermissionPromptDefaultEnabled() &&
++      CuttlePromptablePermission(descriptor) &&
++      CuttlePromptDefaultAppliesTo(context)) {
++    status->status = mojom::blink::PermissionStatus::ASK;
++  }
++}
++
++}  // namespace
++
+ PermissionStatusListener* PermissionStatusListener::Create(
+     ExecutionContext* execution_context,
+     MojoPermissionStatusWithDetails status,
+@@ -30,7 +94,9 @@
+     : ExecutionContextClient(execution_context),
+       status_(std::move(status)),
+       descriptor_(std::move(descriptor)),
+-      receiver_(this, execution_context) {}
++      receiver_(this, execution_context) {
++  CuttleApplyPermissionPromptDefault(status_, *descriptor_, execution_context);
++}
+ PermissionStatusListener::~PermissionStatusListener() = default;
+ 
+ void PermissionStatusListener::StartListening() {
+@@ -65,6 +131,8 @@
+ 
+ void PermissionStatusListener::OnPermissionStatusChange(
+     MojoPermissionStatusWithDetails status) {
++  CuttleApplyPermissionPromptDefault(status, *descriptor_,
++                                     GetExecutionContext());
+   if (status_.Equals(status)) {
+     return;
+   }
+@@ -89,6 +157,13 @@
+   }
+ }
+ 
++void PermissionStatusListener::SetStatus(
++    MojoPermissionStatusWithDetails status) {
++  CuttleApplyPermissionPromptDefault(status, *descriptor_,
++                                     GetExecutionContext());
++  status_ = std::move(status);
++}
++
+ void PermissionStatusListener::AddObserver(Observer* observer) {
+   if (observers_.empty())
+     StartListening();
+diff --git a/third_party/blink/renderer/modules/permissions/permission_status_listener.h b/third_party/blink/renderer/modules/permissions/permission_status_listener.h
+--- a/third_party/blink/renderer/modules/permissions/permission_status_listener.h
++++ b/third_party/blink/renderer/modules/permissions/permission_status_listener.h
+@@ -55,9 +55,7 @@
+   void RemovedEventListener(const AtomicString& event_type);
+ 
+   bool HasPendingActivity();
+-  void SetStatus(MojoPermissionStatusWithDetails status) {
+-    status_ = std::move(status);
+-  }
++  void SetStatus(MojoPermissionStatusWithDetails status);
+ 
+   V8PermissionState state() const;
+   const mojom::blink::PermissionDetailsPtr& details() const;

@@ -1,0 +1,136 @@
+name: Build Chromium
+description: >
+  Restore the build tree, run one build stage in the builder container, and
+  save the tree for the next job. Adapted from ungoogled-chromium-portablelinux.
+
+inputs:
+  prepare-only:
+    description: "If 'true', prepare the tree (sources, patches, gn gen) instead of compiling."
+    required: false
+    default: "false"
+  final:
+    description: "If 'true', this is the last chained job, so running out of time is a failure."
+    required: false
+    default: "false"
+  save-cache:
+    description: "If 'false', do not save the tree for a next job (a prep-only run)."
+    required: false
+    default: "true"
+  resume-run-id:
+    description: "Prep only: start from the tree another run of this workflow saved, instead of from scratch."
+    required: false
+    default: ""
+
+outputs:
+  status:
+    description: "'running' if the build needs another job, 'completed' once chrome and chromedriver exist."
+    value: ${{ steps.build.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    # The ninja budget is sized from here, so a slow restore cannot push the
+    # job past its 6h limit.
+    - name: Record job start
+      shell: bash
+      run: echo "_job_start=$(date +%s)" >> "$GITHUB_ENV"
+
+    - name: Download builder image
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: docker-image-${{ env.ARCH }}
+        path: /tmp
+
+    - name: Load builder image
+      shell: bash
+      run: docker load -i /tmp/chromium-builder.tar
+
+    - name: Download build cache
+      if: ${{ inputs.prepare-only != 'true' }}
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: build-cache-${{ env.ARCH }}
+        path: .github/cache/
+
+    - name: Download build cache of the resumed run
+      if: ${{ inputs.prepare-only == 'true' && inputs.resume-run-id != '' }}
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: build-cache-${{ env.ARCH }}
+        path: .github/cache/
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        run-id: ${{ inputs.resume-run-id }}
+
+    - name: Import build cache
+      if: ${{ inputs.prepare-only != 'true' || inputs.resume-run-id != '' }}
+      shell: bash
+      run: bash ./.github/scripts/import-cache.sh
+
+    - name: Disk usage before build
+      shell: bash
+      run: df -h "$GITHUB_WORKSPACE"
+
+    - name: Build
+      id: build
+      shell: bash
+      env:
+        _prepare_only: ${{ inputs.prepare-only }}
+        _use_existing_image: "true"
+        _gha_final: ${{ inputs.final }}
+      run: bash ./scripts/docker-build.sh
+
+    - name: Disk usage after build
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: df -h "$GITHUB_WORKSPACE"
+
+    # Also after a failed compile: with ninja -k 0 the failing part still built
+    # everything else, and a re-run continues from here instead of losing up to
+    # 5h. Not after a failed prep (a half-prepared tree is worth nothing) or
+    # when the build never ran.
+    - name: Export build cache
+      id: export
+      if: ${{ !cancelled() && inputs.save-cache == 'true' && (steps.build.outcome == 'success' || (steps.build.outcome == 'failure' && inputs.prepare-only != 'true')) }}
+      shell: bash
+      run: bash ./.github/scripts/export-cache.sh
+
+    # Losing this upload loses the whole part's work, so it is retried.
+    - name: Upload build cache
+      id: upload
+      if: ${{ !cancelled() && steps.export.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: build-cache-${{ env.ARCH }}
+        path: .github/cache/build-cache-${{ env.ARCH }}.tar.zst
+        if-no-files-found: error
+        overwrite: true
+        # Long enough to re-run a failed part or resume a run the next day.
+        # The tree is already zstd, so zipping it again only costs time.
+        retention-days: 3
+        compression-level: 0
+
+    - name: Upload build cache (retry)
+      id: upload-retry
+      if: ${{ !cancelled() && steps.upload.outcome == 'failure' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: build-cache-${{ env.ARCH }}
+        path: .github/cache/build-cache-${{ env.ARCH }}.tar.zst
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 3
+        compression-level: 0
+
+    - name: Upload build cache (last retry)
+      if: ${{ !cancelled() && steps.upload-retry.outcome == 'failure' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: build-cache-${{ env.ARCH }}
+        path: .github/cache/build-cache-${{ env.ARCH }}.tar.zst
+        if-no-files-found: error
+        overwrite: true
+        retention-days: 3
+        compression-level: 0

@@ -1,0 +1,27 @@
+name: check
+
+# Fast static checks; the build itself only runs on tags and dispatch.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lint stealth patches
+        run: scripts/lint-patches.sh
+
+      - name: Shellcheck
+        run: shellcheck -x scripts/*.sh .github/scripts/*.sh
+
+      - name: Python syntax
+        run: python3 -m py_compile scripts/smoke.py scripts/fetch-cipd-deps.py
