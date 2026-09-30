@@ -1,0 +1,68 @@
+# Backport of devtools-frontend 1e7b64528042ebd13ebe3e6d7b2952ca7da53fbb
+# ("[ai_assistance] Propagate generated skill JS files to bundle action"),
+# which landed after the devtools-frontend revision Chromium 154 pins.
+#
+# The ai_assistance bundle is compiled straight from TypeScript sources and
+# imports the generated skills/*.skill.js, but did not depend on the action
+# that generates them, so ninja could run the bundle first and fail with
+# "Cannot read file: .../skills/accessibility.skill.js". This adds the
+# dependency; it changes build order only, not what is built.
+#
+# Drop this patch once Chromium's devtools-frontend pin includes the commit.
+diff --git a/third_party/devtools-frontend/src/front_end/models/ai_assistance/BUILD.gn b/third_party/devtools-frontend/src/front_end/models/ai_assistance/BUILD.gn
+index c49c747cb612..ec0c2e046fb0 100644
+--- a/third_party/devtools-frontend/src/front_end/models/ai_assistance/BUILD.gn
++++ b/third_party/devtools-frontend/src/front_end/models/ai_assistance/BUILD.gn
+@@ -115,6 +115,8 @@ devtools_entrypoint("bundle") {
+   split_compilation = true
+   entrypoint = "ai_assistance.ts"
+ 
++  deps = [ "skills:generate_skills" ]
++
+   ts_deps = [ ":ai_assistance" ]
+ 
+   visibility = [
+diff --git a/third_party/devtools-frontend/src/front_end/models/ai_assistance/skills/BUILD.gn b/third_party/devtools-frontend/src/front_end/models/ai_assistance/skills/BUILD.gn
+index 0201e5248000..80c20acd835c 100644
+--- a/third_party/devtools-frontend/src/front_end/models/ai_assistance/skills/BUILD.gn
++++ b/third_party/devtools-frontend/src/front_end/models/ai_assistance/skills/BUILD.gn
+@@ -10,17 +10,19 @@ import("../../../../scripts/build/ninja/vars.gni")
+ # gen/front_end/models/ai_assistance/skills/
+ # so they can be imported relatively by files in this directory.
+ 
+-action_foreach("generate_skills") {
++_skill_sources = [
++  "accessibility.md",
++  "network.md",
++  "performance.md",
++  "sources.md",
++  "storage.md",
++  "styling.md",
++]
++
++action_foreach("_generate_skills") {
+   script = "//third_party/node/node.py"
+ 
+-  sources = [
+-    "accessibility.md",
+-    "network.md",
+-    "performance.md",
+-    "sources.md",
+-    "storage.md",
+-    "styling.md",
+-  ]
++  sources = _skill_sources
+ 
+   inputs = [
+     "../../../../scripts/build/build_ai_skills.mjs",
+@@ -48,3 +50,10 @@ action_foreach("generate_skills") {
+     }
+   }
+ }
++
++group("generate_skills") {
++  public_deps = [ ":_generate_skills" ]
++  public_inputs =
++      process_file_template(_skill_sources,
++                            [ "$target_gen_dir/{{source_name_part}}.skill.js" ])
++}

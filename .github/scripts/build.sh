@@ -19,6 +19,7 @@ if [ "${_prepare_only:-}" = true ]; then
     fetch_tools
     fetch_sources
     apply_ungoogled_patches
+    apply_build_patches
     apply_stealth_patches
     setup_build_inputs
     write_gn_args
@@ -43,10 +44,10 @@ else
     # targets, so one 13h run surfaces every broken patch at once.
     timeout -k 5m -s INT "${_task_timeout}"s ninja -C out/Default -k 0 chrome chromedriver
     rc=$?
-    # One retry within the time left, as cuttle does: some upstream edges race
-    # their generators (at 154, devtools' esbuild bundle reading
-    # skills/*.skill.js before generate_skills writes them). A race clears on
-    # the retry; a real compile error fails again in seconds.
+    # One retry within the time left, as cuttle does, in case another upstream
+    # edge races its generator the way devtools' skills bundle did at 154
+    # (patches/build/0001 fixes that one). A race clears on the retry; a real
+    # compile error fails again in seconds.
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$(remaining)" -gt 600 ]; then
         echo "ninja failed (rc=$rc); retrying once to rule out an ordering race"
         timeout -k 5m -s INT "$(remaining)"s ninja -C out/Default -k 0 chrome chromedriver

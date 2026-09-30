@@ -97,6 +97,28 @@ apply_ungoogled_patches() {
     touch "${stamp}"
 }
 
+# Our own build fixes, applied after ungoogled's patches: upstream fixes the
+# pinned Chromium predates, which change how the tree builds, not what it is.
+# The stamp records the set applied, so a resumed tree prepared with another
+# set is refused rather than silently mixed.
+apply_build_patches() {
+    local stamp="${_src_dir}/.build-patches.stamp" want
+    want=$(cat "${_root}"/patches/build/*.patch | sha256sum | cut -c1-16)
+    if [ -f "${stamp}" ]; then
+        if [ "$(cat "${stamp}")" != "${want}" ]; then
+            echo "the tree has another set of build patches applied; it cannot be resumed" >&2
+            exit 1
+        fi
+        return 0
+    fi
+    local p
+    for p in "${_root}"/patches/build/*.patch; do
+        echo "applying ${p##*/}"
+        (cd "${_src_dir}" && GIT_CEILING_DIRECTORIES="${_build_dir}" git apply "${p}")
+    done
+    echo "${want}" > "${stamp}"
+}
+
 # Applies the stealth series so that a tree prepared for an earlier version of
 # the series (a resumed run) ends up exactly as a fresh prep would leave it,
 # while touching only the files whose patches changed: every other file keeps
@@ -272,8 +294,9 @@ compile_patched_sources() {
                    echo "${_shared_dest}/${f##*/}"
                done) \
              | grep -E '\.(cc|c|mm)$' | LC_ALL=C sort -u)
-    # One retry, as cuttle does: at 154 devtools' esbuild bundle can read
-    # skills/*.skill.js before generate_skills writes them. A retry clears such
-    # a race and fails a real compile error again in seconds.
+    # One retry, as cuttle does, in case another upstream edge races its
+    # generator the way devtools' skills bundle did at 154 (patches/build/0001
+    # fixes that one). A race clears on the retry; a real compile error fails
+    # again in seconds.
     ninja -C out/Default -k 0 "${targets[@]}" || ninja -C out/Default -k 0 "${targets[@]}"
 }
