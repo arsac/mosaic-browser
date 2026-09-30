@@ -13,6 +13,14 @@
   customManagers: [
     {
       customType: "regex",
+      description: "The Renovate version the workflow runs",
+      managerFilePatterns: ["/^\\.github/workflows/renovate\\.yml$/"],
+      matchStrings: [
+        "renovate-version: (?<currentValue>\\S+) # renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)",
+      ],
+    },
+    {
+      customType: "regex",
       description: "versions.env: a tag or branch and the commit it resolves to, bumped together",
       managerFilePatterns: ["/^versions\\.env$/"],
       matchStrings: [
