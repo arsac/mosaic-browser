@@ -14,11 +14,9 @@ if grep -nE '^@@ -[1-9][0-9]*,0 ' 0*.patch; then
     rc=1
 fi
 
-for f in cuttle_fingerprint_switches.cc cuttle_fingerprint_switches.h cuttle_seed.cc cuttle_seed.h; do
-    if [ ! -f "000-shared/${f}" ]; then
-        echo "000-shared/${f} is missing" >&2
-        rc=1
-    fi
-done
+if ! compgen -G '000-shared/cuttle_*.cc' >/dev/null || ! compgen -G '000-shared/cuttle_*.h' >/dev/null; then
+    echo "000-shared has no cuttle_*.cc/.h files; the series cannot compile without them" >&2
+    rc=1
+fi
 
 exit "${rc}"

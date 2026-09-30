@@ -54,9 +54,10 @@ fetch_sources() {
         return 0
     fi
 
-    # chromium-linux-tarballs' linux tarball: Google published no -lite tarball
-    # for 154, and its content matches Chromium's git for every file the
-    # patches touch. The pin guards against the release asset changing.
+    # chromium-linux-tarballs' linux tarball: Google does not publish a -lite
+    # tarball for every release, and this one's content has matched Chromium's
+    # git for every file the patches touch. The pin guards against the release
+    # asset changing.
     sed -i 's|https://commondatastorage.googleapis.com/chromium-browser-official|https://github.com/chromium-linux-tarballs/chromium-tarballs/releases/download/%(_chromium_version)s|g' "${_main_repo}/downloads.ini"
     sed -i 's|chromium-%(_chromium_version)s-lite.tar.xz|chromium-%(_chromium_version)s-linux.tar.xz|g' "${_main_repo}/downloads.ini"
     "${_main_repo}/utils/downloads.py" retrieve -i "${_main_repo}/downloads.ini" -c "${_dl_cache}"
@@ -164,17 +165,17 @@ apply_stealth_patches() {
             cmp -s "${f}" "${dest}/${f##*/}" || cp "${f}" "${dest}/"
         done
     done
-    grep -q '"cuttle_seed.cc"' third_party/blink/common/BUILD.gn || python3 - third_party/blink/common/BUILD.gn <<'PY'
+    python3 - third_party/blink/common/BUILD.gn "${shared}"/cuttle_* <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 s = p.read_text()
-i = s.find("sources = [")
-if i < 0:
-    sys.exit(f"{p}: no sources = [ block found")
-nl = s.find("\n", i)
-files = ["cuttle_fingerprint_switches.cc", "cuttle_fingerprint_switches.h",
-         "cuttle_seed.cc", "cuttle_seed.h"]
-p.write_text(s[:nl] + "".join(f'\n    "{f}",' for f in files) + s[nl:])
+missing = [f for f in sorted(pathlib.Path(a).name for a in sys.argv[2:]) if f'"{f}"' not in s]
+if missing:
+    i = s.find("sources = [")
+    if i < 0:
+        sys.exit(f"{p}: no sources = [ block found")
+    nl = s.find("\n", i)
+    p.write_text(s[:nl] + "".join(f'\n    "{f}",' for f in missing) + s[nl:])
 PY
     cd "${_root}"
 }
@@ -185,52 +186,25 @@ setup_build_inputs() {
     local cipd="${_depot_tools}/cipd"
     cd "${_src_dir}"
 
-    # Written by gclient runhooks, which the tarball's export does not keep.
-    # Replaced only on a content change, so a resumed tree is not regenerated.
-    cat > "${_build_dir}/gclient_args.gni" <<'GNI'
-checkout_android = false
-checkout_android_prebuilts_build_tools = false
-checkout_android_native_support = false
-checkout_chromium_autofill_test_dependencies = false
-checkout_chromium_internal_resources = false
-checkout_clusterfuzz_data = false
-checkout_chromevox_dependencies = false
-checkout_clang_coverage_tools = false
-checkout_clang_tidy = false
-checkout_clangd = false
-checkout_copybara = false
-checkout_cros_internal = false
-checkout_fuchsia = false
-checkout_fuchsia_for_arm64_host = false
-checkout_fuchsia_internal = false
-checkout_glic = false
-checkout_glic_e2e_tests = false
-checkout_glic_internal = false
-checkout_ios = false
-checkout_ios_webkit = false
-checkout_libaom_testdata = false
-checkout_libvpx_testdata = false
-checkout_lottie_proprietary_tests = false
-checkout_mac_sdk = false
-checkout_mutter = false
-checkout_nacl = false
-checkout_openxr = false
-checkout_oculus_sdk = false
-checkout_optimization_profiles = false
-checkout_pgo_profiles = false
-checkout_remoteexec = false
-checkout_rts_model = false
-checkout_src_internal = false
-checkout_telemetry_dependencies = false
-checkout_test_data = false
-checkout_traffic_annotation_tools = false
-checkout_webp_dirs = false
-build_with_chromium = true
-cros_boards = ""
-cros_boards_with_qemu_images = ""
-generate_location_tags = true
-non_git_source = false
-GNI
+    # What gclient writes from DEPS' gclient_gn_args, with cuttle's values:
+    # every checkout_* false (its --nohooks checkout has none of them) and the
+    # rest as DEPS sets them. Generated rather than listed, so a key a new
+    # Chromium adds is never missing. Replaced only on a content change, so a
+    # resumed tree is not regenerated.
+    python3 - DEPS > "${_build_dir}/gclient_args.gni" <<'PY'
+import sys
+g = {"Str": str}
+g["Var"] = lambda k: g["vars"][k]
+exec(open(sys.argv[1]).read(), g)
+for name in g["gclient_gn_args"]:
+    value = g["vars"][name]
+    if name.startswith("checkout_") or isinstance(value, bool):
+        value = "false" if name.startswith("checkout_") else str(value).lower()
+    else:
+        value = '"%s"' % value
+    print(f"{name} = {value}")
+print("non_git_source = false")
+PY
     cmp -s "${_build_dir}/gclient_args.gni" build/config/gclient_args.gni \
         || cp "${_build_dir}/gclient_args.gni" build/config/gclient_args.gni
 
@@ -276,10 +250,11 @@ GNI
 write_gn_args() {
     mkdir -p "${_out_dir}"
     # ungoogled's flags.gn goes in first: its patches assume those flags, and
-    # building without them fails ~30k targets in. Keys flags.gn sets again
-    # are dropped so each has exactly one assignment.
-    grep -vE '^(chrome_pgo_phase|enable_remoting|safe_browsing_mode|treat_warnings_as_errors|enable_widevine)=' \
-        "${_main_repo}/flags.gn" > "${_out_dir}/args.gn"
+    # building without them fails ~30k targets in. Keys our flags.gn sets again
+    # are dropped from it so each has exactly one assignment.
+    local ours
+    ours=$(sed -nE 's/^([a-z0-9_]+) *=.*/\1/p' "${_root}/flags.gn" | paste -sd'|' -)
+    grep -vE "^(${ours}) *=" "${_main_repo}/flags.gn" > "${_out_dir}/args.gn"
     cat "${_root}/flags.gn" >> "${_out_dir}/args.gn"
     cat "${_out_dir}/args.gn"
 }
@@ -319,8 +294,9 @@ compile_patched_sources() {
             echo "not built by any target: ${f}"
         fi
     done < <( (grep -h '^+++ b/' "${_root}"/patches/stealth/0*.patch | sed 's|^+++ b/||'
-               printf '%s\n' third_party/blink/common/cuttle_seed.cc \
-                   third_party/blink/common/cuttle_fingerprint_switches.cc) \
+               for f in "${_root}"/patches/stealth/000-shared/*.cc; do
+                   echo "third_party/blink/common/${f##*/}"
+               done) \
              | grep -E '\.(cc|c|mm)$' | LC_ALL=C sort -u)
     ninja -C out/Default -k 0 "${targets[@]}"
 }

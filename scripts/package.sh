@@ -1,8 +1,10 @@
 #!/bin/bash
 # Package the built binaries as mosaic-browser-<version>-linux-x64.tar.xz plus a
-# .sha256 and version.json, into build/release. File list from
-# ungoogled-chromium-portablelinux scripts/package.sh (BSD-3-Clause), without
-# its desktop-integration files.
+# .sha256 and version.json, into build/release. Adapted from
+# ungoogled-chromium-portablelinux scripts/package.sh (BSD-3-Clause); the file
+# selection is cuttle's (build-linux.sh stage 7): what the browser cannot start
+# without is named, so its absence fails here, and the rest is taken by type,
+# so a runtime file a new Chromium adds is not silently left out.
 #
 # version.json is the contract for consumers of the tarball: they read the
 # Chromium version the persona flags must match from it rather than restating it.
@@ -19,28 +21,24 @@ _name="mosaic-browser-${_version}-linux-x64"
 # shellcheck source=versions.env
 . "${_root}/versions.env"
 
-_files="chrome
-chrome_100_percent.pak
-chrome_200_percent.pak
-chrome_crashpad_handler
-chromedriver
-icudtl.dat
-libEGL.so
-libGLESv2.so
-libqt5_shim.so
-libqt6_shim.so
-libvk_swiftshader.so
-libvulkan.so.1
-locales
-resources.pak
-v8_context_snapshot.bin
-vk_swiftshader_icd.json"
+_required=(chrome chromedriver chrome_crashpad_handler icudtl.dat resources.pak locales)
 
 rm -rf "${_release_dir:?}/${_name}"
 mkdir -p "${_release_dir}/${_name}"
-for f in ${_files}; do
-    cp -r "${_out_dir}/${f}" "${_release_dir}/${_name}/"
+cd "${_out_dir}"
+for f in "${_required[@]}"; do
+    [ -e "${f}" ] || { echo "${f} is missing from ${_out_dir}" >&2; exit 1; }
 done
+shopt -s nullglob
+_files=()
+while read -r f; do
+    _files+=("${f}")
+done < <(for f in "${_required[@]}" chrome_sandbox ./*.pak ./*.bin ./*.json ./*.so ./*.so.*; do
+             [ -e "${f}" ] && echo "${f#./}"
+         done | LC_ALL=C sort -u)
+shopt -u nullglob
+cp -r "${_files[@]}" "${_release_dir}/${_name}/"
+cd "${_root}"
 # Binary redistribution of the BSD-3-Clause parts requires the notices.
 cp "${_root}/LICENSE" "${_root}/THIRD-PARTY.md" "${_release_dir}/${_name}/"
 cat > "${_release_dir}/version.json" <<JSON
