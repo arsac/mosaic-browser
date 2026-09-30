@@ -61,6 +61,12 @@
       automerge: true,
     },
     {
+      description: "The builder stays on Ubuntu 24.04: the binary links against its glibc (no sysroot), and a newer release would raise that floor above Debian trixie's, where the browser runs. Digest updates (security fixes) still apply.",
+      matchPackageNames: ["ubuntu"],
+      matchUpdateTypes: ["major", "minor"],
+      enabled: false,
+    },
+    {
       description: "Action and base image digests",
       matchManagers: ["github-actions", "dockerfile"],
       automerge: true,
