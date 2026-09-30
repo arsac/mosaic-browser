@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Install the CIPD and GCS build inputs Chromium's DEPS gates on non_git_source.
+"""Provide what gclient would have, from Chromium's DEPS: gclient_args.gni, and
+the CIPD and GCS build inputs DEPS gates on non_git_source.
 
-Each release adds build inputs there (the hermetic cpython3 gn runs on, the
+gclient_args.gni is written the way cuttle's --nohooks checkout ends up with it:
+every checkout_* false, the rest as DEPS sets it. It is replaced only on a
+content change, so a resumed tree is not regenerated.
+
+Each release adds build inputs behind non_git_source (the hermetic cpython3 gn runs on, the
 typescript compiler and esbuild devtools needs, clang-format, ...), and neither
 the source tarball nor a --nohooks checkout provides all of them. This evaluates
 DEPS and every recursedep's DEPS, and installs each missing linux package.
@@ -12,7 +17,7 @@ redone rather than kept.
 
 Ported from glim-sh/cuttle packages/browser/build/build-linux.sh (MIT).
 
-Usage: fetch-cipd-deps.py <src-dir> <path/to/cipd>
+Usage: deps.py <src-dir> <path/to/cipd>
 """
 import collections
 import hashlib
@@ -67,13 +72,37 @@ def write_stamp(stamp, spec):
         f.write(spec)
 
 
-def emit(g, prefix):
+def conditions(g):
     env = collections.defaultdict(bool)
     env.update({k: v for k, v in g.get("vars", {}).items() if isinstance(v, (bool, str))})
     for k in [k for k in env if k.startswith("checkout_")]:
         env[k] = False
     env.update(non_git_source=True, build_with_chromium=True, checkout_linux=True,
                checkout_x64=True, host_os="linux", host_cpu="x64")
+    return env
+
+
+def write_gclient_args(g):
+    lines = []
+    for name in g["gclient_gn_args"]:
+        value = g["vars"][name]
+        if name.startswith("checkout_"):
+            value = "false"
+        elif isinstance(value, bool):
+            value = str(value).lower()
+        else:
+            value = f'"{value}"'
+        lines.append(f"{name} = {value}\n")
+    lines.append("non_git_source = false\n")
+    path = os.path.join(src, "build/config/gclient_args.gni")
+    text = "".join(lines)
+    if not os.path.isfile(path) or open(path).read() != text:
+        with open(path, "w") as f:
+            f.write(text)
+
+
+def emit(g, prefix):
+    env = conditions(g)
     for path, dep in g.get("deps", {}).items():
         if not isinstance(dep, dict) or dep.get("dep_type") not in ("cipd", "gcs"):
             continue
@@ -105,13 +134,19 @@ def emit(g, prefix):
 
 
 top = load(os.path.join(src, "DEPS"))
+write_gclient_args(top)
 emit(top, "")
 # gclient also evaluates the DEPS of every recursedep (devtools-frontend's
 # esbuild, Dawn's Go, ...); with use_relative_paths their keys are repo-relative.
+# A recursedep absent from the tree is skipped: gn gen fails on it if the build
+# needs it. One present without its DEPS would silently lose its packages.
 for rd in top.get("recursedeps", []):
     rd, name = (rd, "DEPS") if isinstance(rd, str) else rd
     sub = rd.removeprefix("src/")
     f = os.path.join(src, sub, name)
-    if os.path.isfile(f):
-        g = load(f)
-        emit(g, sub if g.get("use_relative_paths") else "")
+    if not os.path.isfile(f):
+        if os.path.isdir(os.path.join(src, sub)):
+            sys.exit(f"{sub} is in the tree but its {name} is not; its packages cannot be resolved")
+        continue
+    g = load(f)
+    emit(g, sub if g.get("use_relative_paths") else "")

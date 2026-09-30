@@ -21,24 +21,19 @@ _name="mosaic-browser-${_version}-linux-x64"
 # shellcheck source=versions.env
 . "${_root}/versions.env"
 
-_required=(chrome chromedriver chrome_crashpad_handler icudtl.dat resources.pak locales)
-
 rm -rf "${_release_dir:?}/${_name}"
 mkdir -p "${_release_dir}/${_name}"
-cd "${_out_dir}"
-for f in "${_required[@]}"; do
-    [ -e "${f}" ] || { echo "${f} is missing from ${_out_dir}" >&2; exit 1; }
-done
-shopt -s nullglob
-_files=()
-while read -r f; do
-    _files+=("${f}")
-done < <(for f in "${_required[@]}" chrome_sandbox ./*.pak ./*.bin ./*.json ./*.so ./*.so.*; do
-             [ -e "${f}" ] && echo "${f#./}"
-         done | LC_ALL=C sort -u)
-shopt -u nullglob
-cp -r "${_files[@]}" "${_release_dir}/${_name}/"
-cd "${_root}"
+(
+    cd "${_out_dir}"
+    for f in chrome chromedriver chrome_crashpad_handler icudtl.dat resources.pak locales; do
+        [ -e "${f}" ] || { echo "${f} is missing from ${_out_dir}" >&2; exit 1; }
+    done
+    # *.so.[0-9]* keeps versioned libraries (libvulkan.so.1), not ninja's .so.TOC.
+    shopt -s nullglob
+    files=(chrome chromedriver chrome_crashpad_handler icudtl.dat locales *.pak *.bin *.json *.so *.so.[0-9]*)
+    [ -e chrome_sandbox ] && files+=(chrome_sandbox)
+    cp -r "${files[@]}" "${_release_dir}/${_name}/"
+)
 # Binary redistribution of the BSD-3-Clause parts requires the notices.
 cp "${_root}/LICENSE" "${_root}/THIRD-PARTY.md" "${_release_dir}/${_name}/"
 cat > "${_release_dir}/version.json" <<JSON

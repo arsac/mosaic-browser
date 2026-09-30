@@ -14,9 +14,14 @@ if grep -nE '^@@ -[1-9][0-9]*,0 ' 0*.patch; then
     rc=1
 fi
 
-if ! compgen -G '000-shared/cuttle_*.cc' >/dev/null || ! compgen -G '000-shared/cuttle_*.h' >/dev/null; then
-    echo "000-shared has no cuttle_*.cc/.h files; the series cannot compile without them" >&2
-    rc=1
-fi
+# Every cuttle_* header the series includes must come from 000-shared or be
+# created by a patch; otherwise the failure only shows at compile time.
+created=$(grep -h '^+++ b/' 0*.patch | sed 's|.*/||')
+while read -r h; do
+    if [ ! -f "000-shared/${h}" ] && ! grep -qx "${h}" <<< "${created}"; then
+        echo "${h} is included by the series but neither in 000-shared nor created by a patch" >&2
+        rc=1
+    fi
+done < <(grep -hoE '^\+#include "[^"]*cuttle_[a-z0-9_]+\.h"' 0*.patch | grep -oE 'cuttle_[a-z0-9_]+\.h' | sort -u)
 
 exit "${rc}"

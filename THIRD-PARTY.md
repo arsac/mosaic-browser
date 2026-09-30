@@ -57,7 +57,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 copied unchanged at the commit pinned in `versions.env`. The way the build
 prepares the tree and configures it is ported from cuttle's
 `packages/browser/build`: `docker/build.Dockerfile`, `flags.gn`,
-`scripts/fetch-cipd-deps.py` and parts of `scripts/shared.sh`.
+`scripts/deps.py` and parts of `scripts/shared.sh`.
 
 ```
 MIT License

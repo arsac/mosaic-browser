@@ -16,6 +16,11 @@ setup_paths() {
     _dl_cache="${_build_dir}/download_cache"
     _src_dir="${_build_dir}/src"
     _out_dir="${_src_dir}/out/Default"
+    # 000-shared holds new files, not diffs. Every cuttle_* file goes to
+    # blink/common, where the .cc files compile once into blink_common; the
+    # patches also include the headers through chrome/common.
+    _shared_dir="${_root}/patches/stealth/000-shared"
+    _shared_dest=third_party/blink/common
 
     # shellcheck source=versions.env
     . "${_root}/versions.env"
@@ -155,17 +160,15 @@ apply_stealth_patches() {
     done
     shopt -u nullglob
 
-    # 000-shared holds new files, not diffs. The patches include the headers
-    # from either directory; the .cc files compile once, into blink_common.
     # Copied only on a content change: the header has ~25 includers.
-    local shared="${_root}/patches/stealth/000-shared" dest
-    for f in "${shared}"/cuttle_*.h "${shared}"/cuttle_*.cc; do
-        for dest in third_party/blink/common chrome/common; do
-            case "${dest}/${f##*/}" in chrome/common/*.cc) continue ;; esac
+    local dest
+    for f in "${_shared_dir}"/cuttle_*; do
+        for dest in "${_shared_dest}" chrome/common; do
+            [ "${dest}" = chrome/common ] && [ "${f##*.}" != h ] && continue
             cmp -s "${f}" "${dest}/${f##*/}" || cp "${f}" "${dest}/"
         done
     done
-    python3 - third_party/blink/common/BUILD.gn "${shared}"/cuttle_* <<'PY'
+    python3 - "${_shared_dest}/BUILD.gn" "${_shared_dir}"/cuttle_* <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 s = p.read_text()
@@ -185,28 +188,6 @@ PY
 setup_build_inputs() {
     local cipd="${_depot_tools}/cipd"
     cd "${_src_dir}"
-
-    # What gclient writes from DEPS' gclient_gn_args, with cuttle's values:
-    # every checkout_* false (its --nohooks checkout has none of them) and the
-    # rest as DEPS sets them. Generated rather than listed, so a key a new
-    # Chromium adds is never missing. Replaced only on a content change, so a
-    # resumed tree is not regenerated.
-    python3 - DEPS > "${_build_dir}/gclient_args.gni" <<'PY'
-import sys
-g = {"Str": str}
-g["Var"] = lambda k: g["vars"][k]
-exec(open(sys.argv[1]).read(), g)
-for name in g["gclient_gn_args"]:
-    value = g["vars"][name]
-    if name.startswith("checkout_") or isinstance(value, bool):
-        value = "false" if name.startswith("checkout_") else str(value).lower()
-    else:
-        value = '"%s"' % value
-    print(f"{name} = {value}")
-print("non_git_source = false")
-PY
-    cmp -s "${_build_dir}/gclient_args.gni" build/config/gclient_args.gni \
-        || cp "${_build_dir}/gclient_args.gni" build/config/gclient_args.gni
 
     # Parity with cuttle's build, whose --nohooks checkout lacks the version
     # stamps and so gets placeholders (build-linux.sh stage 5). The tarball
@@ -235,16 +216,9 @@ PY
     python3 tools/clang/scripts/update.py
     [ -x third_party/node/linux/node-linux-x64/bin/node ] || bash third_party/node/update_node_binaries
 
-    # gn, the Dawn Go toolchain and gperf come from here too, at the versions
-    # DEPS pins. A recursedep's DEPS missing from the tree would be skipped
-    # silently, so the tools the build cannot do without are checked by name.
-    python3 "${_root}/scripts/fetch-cipd-deps.py" "${_src_dir}" "${cipd}"
-    local tool
-    for tool in buildtools/linux64/gn \
-                third_party/dawn/tools/golang/linux-amd64/bin/go \
-                third_party/gperf/cipd/bin/gperf; do
-        [ -x "${tool}" ] || { echo "${tool} missing after fetching the DEPS packages" >&2; exit 1; }
-    done
+    # gclient_args.gni, and gn, Dawn's Go, gperf and every other package at
+    # the version DEPS pins.
+    python3 "${_root}/scripts/deps.py" "${_src_dir}" "${cipd}"
 }
 
 write_gn_args() {
@@ -294,8 +268,8 @@ compile_patched_sources() {
             echo "not built by any target: ${f}"
         fi
     done < <( (grep -h '^+++ b/' "${_root}"/patches/stealth/0*.patch | sed 's|^+++ b/||'
-               for f in "${_root}"/patches/stealth/000-shared/*.cc; do
-                   echo "third_party/blink/common/${f##*/}"
+               for f in "${_shared_dir}"/cuttle_*.cc; do
+                   echo "${_shared_dest}/${f##*/}"
                done) \
              | grep -E '\.(cc|c|mm)$' | LC_ALL=C sort -u)
     ninja -C out/Default -k 0 "${targets[@]}"
