@@ -34,8 +34,9 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event != 'pull_request' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
+    # GITHUB_TOKEN only reads; the release is created with the bot's token.
     permissions:
-      contents: write
+      contents: read
       actions: read
       attestations: read
     env:
@@ -109,10 +110,25 @@ jobs:
               --source-digest "${SHA}" --deny-self-hosted-runners
           done
 
+      # The tag points at the build's commit, whose workflow files can differ
+      # from main's; creating such a ref needs the workflows permission, which
+      # GITHUB_TOKEN can never have (it fails with 403 "Resource not accessible
+      # by integration").
+      - name: Mint bot token
+        if: steps.find.outputs.release == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
+
       # <UC_TAG>.<n>, n one past the highest release already cut for this tag.
       - name: Release
         if: steps.find.outputs.release == 'true'
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SHA: ${{ steps.find.outputs.sha }}
           KEY: ${{ steps.find.outputs.key }}
         run: |
