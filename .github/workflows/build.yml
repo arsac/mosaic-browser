@@ -6,9 +6,11 @@ name: build
 # previous one reported status 'running'. Pattern and scripts from
 # ungoogled-chromium-portablelinux.
 #
-# Every push to main is planned by its build key (scripts/build-key.sh): a key
-# already released, or built on main, is not built again unless a dispatch
-# forces it.
+# A push to main builds only a new browser version: ungoogled-chromium's pin or
+# the stealth series differs from the latest release. Any other change to the
+# build inputs waits for a dispatch or the next version. Either way a build key
+# (scripts/build-key.sh) already released, or built on main, is not built again
+# unless a dispatch forces it.
 # Otherwise the build is smoked, uploaded as release-<key> and attested; the
 # release workflow then publishes it. A pull request that touches the build
 # inputs, or a dispatch with prepare_only, runs only prep: every pin resolves,
@@ -58,7 +60,8 @@ defaults:
 jobs:
   # Decides what this run does: a pull request or a prepare_only dispatch runs
   # prep only; a build key already built on main (by a run of this repository,
-  # that succeeded) is skipped unless forced; anything else is built.
+  # that succeeded) is skipped unless forced, and so is a push that leaves the
+  # browser version as released; anything else is built.
   plan:
     runs-on: ubuntu-24.04
     permissions:
@@ -112,12 +115,29 @@ jobs:
                 fi
               done
             fi
+            # The browser version is ungoogled-chromium's pin plus the stealth
+            # series as vendored, compared by content: a cuttle bump that
+            # leaves patches/stealth alone is not a new browser.
+            if [ -z "${built}" ] && [ "${GITHUB_EVENT_NAME}" = push ]; then
+              prev=$(gh release list --repo "${GITHUB_REPOSITORY}" --limit 1 --json tagName --jq '.[0].tagName // ""')
+              if [ -n "${prev}" ]; then
+                IFS=$'\t' read -r uc_tag uc_commit source_commit < <(
+                  gh release download "${prev}" --repo "${GITHUB_REPOSITORY}" --pattern version.json --output - \
+                    | jq -r '[.uc_tag, .uc_commit, .source_commit] | @tsv')
+                git fetch -q --depth 1 origin "${source_commit}"
+                if [ "${uc_tag}" = "${UC_TAG}" ] && [ "${uc_commit}" = "${UC_COMMIT}" ] \
+                   && [ "$(git rev-parse "${source_commit}:patches/stealth")" = "$(git rev-parse HEAD:patches/stealth)" ]; then
+                  built="unchanged:${prev}"
+                fi
+              fi
+            fi
             if [ -n "${built}" ]; then mode=skip; else mode=full; fi
           fi
           echo "mode=${mode}" >> "$GITHUB_OUTPUT"
           case "${built}" in
             "") detail="" ;;
             released) detail=" (already released)" ;;
+            unchanged:*) detail=" (browser version unchanged since ${built#unchanged:}; dispatch to build)" ;;
             *) detail=" (built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${built})" ;;
           esac
           echo "build key \`${key}\`: ${mode}${detail}" >> "$GITHUB_STEP_SUMMARY"
