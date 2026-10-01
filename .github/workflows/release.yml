@@ -124,7 +124,11 @@ jobs:
           permission-contents: write
           permission-workflows: write
 
-      # <UC_TAG>.<n>, n one past the highest release already cut for this tag.
+      # <UC_TAG>.<n>, n one past the highest release already cut for this tag,
+      # as a pre-release: it is promoted by hand once tested. The notes lead
+      # with what changed for consumers (Chromium, ungoogled-chromium, the
+      # stealth series) since the previous release, then GitHub's generated
+      # list of merged changes.
       - name: Release
         if: steps.find.outputs.release == 'true'
         env:
@@ -136,10 +140,36 @@ jobs:
           n=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${uc_tag}." --jq '.[].ref' \
                 | sed -nE "s|^refs/tags/${uc_tag//./\\.}\\.([0-9]+)$|\\1|p" | sort -n | tail -1)
           tag="${uc_tag}.$(( ${n:-0} + 1 ))"
-          notes=$(printf '%s\n\n%s\n\n%s\n' \
+
+          prev=$(gh release list --repo "${GITHUB_REPOSITORY}" --limit 1 --json tagName --jq '.[0].tagName // ""')
+          changes="First release."
+          since=()
+          if [ -n "${prev}" ] && gh release download "${prev}" --repo "${GITHUB_REPOSITORY}" \
+              --pattern version.json --dir previous; then
+            since=(--notes-start-tag "${prev}")
+            changes=""
+            for field in chromium_version:Chromium uc_tag:ungoogled-chromium cuttle_commit:"stealth series (cuttle)"; do
+              old=$(jq -r ".${field%%:*} // \"\"" previous/version.json)
+              new=$(jq -r ".${field%%:*} // \"\"" release/version.json)
+              if [ "${old}" != "${new}" ]; then
+                changes+="- ${field#*:}: \`${old}\` to \`${new}\`"
+                if [ "${field%%:*}" = cuttle_commit ]; then
+                  changes+=" ([diff](https://github.com/glim-sh/cuttle/compare/${old}...${new}))"
+                fi
+                changes+=$'\n'
+              fi
+            done
+            changes="${changes%$'\n'}"
+            changes="${changes:-Same Chromium, ungoogled-chromium and stealth series as ${prev}.}"
+            changes="Since ${prev}:"$'\n\n'"${changes}"
+          fi
+
+          notes=$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
+            "${changes}" \
             "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID} from ${SHA}." \
             "Verify a file with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`." \
             "build-key: ${KEY}")
           gh release create "${tag}" release/* --repo "${GITHUB_REPOSITORY}" \
-            --target "${SHA}" --title "${tag}" --notes "${notes}"
-          echo "Released ${tag} (build key \`${KEY}\`)." >> "$GITHUB_STEP_SUMMARY"
+            --target "${SHA}" --title "${tag}" --prerelease \
+            --notes "${notes}" --generate-notes "${since[@]}"
+          echo "Released ${tag} as a pre-release (build key \`${KEY}\`)." >> "$GITHUB_STEP_SUMMARY"
