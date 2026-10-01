@@ -1,0 +1,129 @@
+name: release
+
+# Publishes a successful build of main as a GitHub release: the next
+# <UC_TAG>.<n> tag at the commit it was built from, with its tarball, checksum
+# and version.json. Builds and releases are separate so a release never
+# rebuilds: each build key is released once, from the run that built it.
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: A successful build run on main whose files to release
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    # A workflow_run workflow gets write access whatever the triggering run
+    # had, so only this repository's own successful push or dispatch runs are
+    # considered, never pull-request ones. The run is checked again below,
+    # which also covers a dispatched run id.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Find what to release
+        id: find
+        run: |
+          if ! [[ "${RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "::error::run id must be a number"
+            exit 1
+          fi
+          IFS=$'\t' read -r name conclusion event branch repo sha < <(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
+              --jq '[.name, .conclusion, .event, .head_branch, .head_repository.full_name, .head_sha] | @tsv')
+          if [ "${name}" != build ] || [ "${conclusion}" != success ] || [ "${branch}" != main ] \
+             || [ "${repo}" != "${GITHUB_REPOSITORY}" ] \
+             || { [ "${event}" != push ] && [ "${event}" != workflow_dispatch ]; }; then
+            echo "::error::run ${RUN_ID} is not a successful build of ${GITHUB_REPOSITORY} main (${name}, ${conclusion}, ${event}, ${branch}, ${repo})"
+            exit 1
+          fi
+          # release-<key>; "release" is the name runs before build keys used.
+          artifact=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" \
+            --jq '[.artifacts[] | select(.expired | not) | select(.name | test("^release(-[0-9a-f]{64})?$")) | .name][0] // ""')
+          # The key comes from the commit, not from anything in the artifact.
+          key=$(scripts/build-key.sh "${sha}")
+          if [ -z "${artifact}" ]; then
+            echo "Run ${RUN_ID} built nothing (planned as already built, or prep only)." >> "$GITHUB_STEP_SUMMARY"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq '.[].body' | grep -qxF "build-key: ${key}"; then
+            echo "Build key \`${key}\` is already released." >> "$GITHUB_STEP_SUMMARY"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "release=true"
+              echo "artifact=${artifact}"
+              echo "sha=${sha}"
+              echo "key=${key}"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download the build's files
+        if: steps.find.outputs.release == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.find.outputs.artifact }}
+          path: release
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.RUN_ID }}
+
+      # The files came from another run, so they are trusted only once their
+      # provenance says this repository's build workflow made them from exactly
+      # that commit, on a GitHub-hosted runner.
+      - name: Verify the files
+        if: steps.find.outputs.release == 'true'
+        env:
+          SHA: ${{ steps.find.outputs.sha }}
+        run: |
+          cd release
+          sha256sum -c ./*.tar.xz.sha256
+          for f in ./*.tar.xz version.json; do
+            gh attestation verify "${f}" --repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/build.yml" \
+              --source-digest "${SHA}" --deny-self-hosted-runners
+          done
+
+      # <UC_TAG>.<n>, n one past the highest release already cut for this tag.
+      - name: Release
+        if: steps.find.outputs.release == 'true'
+        env:
+          SHA: ${{ steps.find.outputs.sha }}
+          KEY: ${{ steps.find.outputs.key }}
+        run: |
+          uc_tag=$(git show "${SHA}:versions.env" | sed -nE 's/^UC_TAG=(.*)/\1/p')
+          n=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${uc_tag}." --jq '.[].ref' \
+                | sed -nE "s|^refs/tags/${uc_tag//./\\.}\\.([0-9]+)$|\\1|p" | sort -n | tail -1)
+          tag="${uc_tag}.$(( ${n:-0} + 1 ))"
+          notes=$(printf '%s\n\n%s\n\n%s\n' \
+            "Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID} from ${SHA}." \
+            "Verify a file with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`." \
+            "build-key: ${KEY}")
+          gh release create "${tag}" release/* --repo "${GITHUB_REPOSITORY}" \
+            --target "${SHA}" --title "${tag}" --notes "${notes}"
+          echo "Released ${tag} (build key \`${KEY}\`)." >> "$GITHUB_STEP_SUMMARY"

@@ -75,6 +75,12 @@
       enabled: false,
     },
     {
+      description: "A new builder image digest changes the build key and costs a 13h build: take security updates monthly.",
+      matchPackageNames: ["ubuntu"],
+      matchUpdateTypes: ["digest"],
+      schedule: ["before 6am on the first day of the month"],
+    },
+    {
       description: "Action and base image digests",
       matchManagers: ["github-actions", "dockerfile"],
       automerge: true,

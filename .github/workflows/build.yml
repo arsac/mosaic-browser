@@ -6,19 +6,19 @@ name: build
 # previous one reported status 'running'. Pattern and scripts from
 # ungoogled-chromium-portablelinux.
 #
-# A tag <UC_TAG>.<n> (e.g. 154.0.8037.57-1.1) publishes a GitHub release with
-# the attested tarball. workflow_dispatch builds, smokes and attests the same
-# artifacts (version <UC_TAG>-g<sha>) without a release. A pull request that
-# touches the build inputs, or a dispatch with prepare_only, runs only prep:
-# every pin resolves, every patch applies, gn accepts the tree and the patched
-# sources compile. A dispatch with resume_from_run starts from the tree a
-# failed run saved (same ungoogled tag, tarball and ninja), redoing only the
-# patches that changed since.
+# Every push to main is planned by its build key (scripts/build-key.sh): a key
+# already released, or built on main, is not built again unless a dispatch
+# forces it.
+# Otherwise the build is smoked, uploaded as release-<key> and attested; the
+# release workflow then publishes it. A pull request that touches the build
+# inputs, or a dispatch with prepare_only, runs only prep: every pin resolves,
+# every patch applies, gn accepts the tree and the patched sources compile. A
+# dispatch with resume_from_run starts from the tree a failed run saved (same
+# ungoogled tag, tarball and ninja), redoing only the patches that changed.
 
 on:
   push:
-    tags:
-      - "[0-9]+.[0-9]+.[0-9]+.[0-9]+-[0-9]+.[0-9]+"
+    branches: [main]
   pull_request:
     paths:
       - versions.env
@@ -37,6 +37,10 @@ on:
         description: Run id whose saved build tree to continue from (within its 3-day retention)
         type: string
         default: ""
+      force:
+        description: Build even if this build key was already built
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,41 +56,84 @@ defaults:
     shell: bash
 
 jobs:
-  prep:
+  # Decides what this run does: a pull request or a prepare_only dispatch runs
+  # prep only; a build key already built on main (by a run of this repository,
+  # that succeeded) is skipped unless forced; anything else is built.
+  plan:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      # Downloading another run's build tree (resume_from_run).
       actions: read
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      full_build: ${{ steps.version.outputs.full_build }}
+      mode: ${{ steps.plan.outputs.mode }}
+      key: ${{ steps.plan.outputs.key }}
+      version: ${{ steps.plan.outputs.version }}
+      chromium_version: ${{ steps.plan.outputs.chromium_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Resolve version
-        id: version
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARE_ONLY: ${{ inputs.prepare_only }}
+          FORCE: ${{ inputs.force }}
         run: |
           . versions.env
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then
-            case "${GITHUB_REF_NAME}" in
-              "${UC_TAG}".*) version="${GITHUB_REF_NAME}" ;;
-              *) echo "::error::tag ${GITHUB_REF_NAME} is not ${UC_TAG}.<n> (UC_TAG from versions.env)"; exit 1 ;;
-            esac
-          else
-            version="${UC_TAG}-g${GITHUB_SHA::7}"
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "chromium_version=${CHROMIUM_VERSION}" >> "$GITHUB_OUTPUT"
-          full_build=true
+          key=$(scripts/build-key.sh)
+          {
+            echo "key=${key}"
+            echo "version=${UC_TAG}-${key::12}"
+            echo "chromium_version=${CHROMIUM_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+          built=""
           if [ "${GITHUB_EVENT_NAME}" = pull_request ] || [ "${PREPARE_ONLY}" = true ]; then
-            full_build=false
+            mode=prep
+          else
+            if [ "${FORCE}" != true ]; then
+              # Released keys first: a release is permanent, an artifact
+              # expires after 90 days.
+              if gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq '.[].body' \
+                  | grep -qxF "build-key: ${key}"; then
+                built=released
+              fi
+            fi
+            if [ "${FORCE}" != true ] && [ -z "${built}" ]; then
+              for run in $(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=release-${key}&per_page=100" \
+                  --jq '.artifacts[] | select(.expired | not)
+                        | select(.workflow_run.head_branch == "main")
+                        | select(.workflow_run.head_repository_id == .workflow_run.repository_id)
+                        | .workflow_run.id'); do
+                if [ "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run}" --jq .conclusion)" = success ]; then
+                  built=${run}
+                  break
+                fi
+              done
+            fi
+            if [ -n "${built}" ]; then mode=skip; else mode=full; fi
           fi
-          echo "full_build=${full_build}" >> "$GITHUB_OUTPUT"
-        env:
-          PREPARE_ONLY: ${{ inputs.prepare_only }}
+          echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+          case "${built}" in
+            "") detail="" ;;
+            released) detail=" (already released)" ;;
+            *) detail=" (built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${built})" ;;
+          esac
+          echo "build key \`${key}\`: ${mode}${detail}" >> "$GITHUB_STEP_SUMMARY"
+
+  prep:
+    runs-on: ubuntu-24.04
+    needs: plan
+    if: needs.plan.outputs.mode != 'skip'
+    permissions:
+      contents: read
+      # Downloading another run's build tree (resume_from_run).
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Lint stealth patches
         run: scripts/lint-patches.sh
@@ -99,7 +146,7 @@ jobs:
           context: ./docker
           file: ./docker/build.Dockerfile
           tags: chromium-builder
-          build-args: CHROMIUM_VERSION=${{ steps.version.outputs.chromium_version }}
+          build-args: CHROMIUM_VERSION=${{ needs.plan.outputs.chromium_version }}
           outputs: type=docker,dest=/tmp/chromium-builder.tar
           cache-from: type=gha,scope=builder
           cache-to: type=gha,scope=builder,mode=max
@@ -115,13 +162,13 @@ jobs:
         uses: ./.github/actions/build
         with:
           prepare-only: true
-          save-cache: ${{ steps.version.outputs.full_build }}
+          save-cache: ${{ needs.plan.outputs.mode == 'full' }}
           resume-run-id: ${{ inputs.resume_from_run }}
 
   build_part_01:
     runs-on: ubuntu-24.04
-    needs: prep
-    if: needs.prep.outputs.full_build == 'true'
+    needs: [plan, prep]
+    if: needs.plan.outputs.mode == 'full'
     outputs:
       status: ${{ steps.build.outputs.status }}
     steps:
@@ -239,7 +286,7 @@ jobs:
 
   package:
     runs-on: ubuntu-24.04
-    needs: [prep, build_part_01, build_part_10]
+    needs: [plan, build_part_01, build_part_10]
     # build_part_10 is skipped when an earlier part completed the build; any
     # failed ancestor still fails this condition. Part 1 must have run, or this
     # was a prep-only run.
@@ -249,7 +296,7 @@ jobs:
       id-token: write
       attestations: write
     env:
-      VERSION: ${{ needs.prep.outputs.version }}
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -279,10 +326,13 @@ jobs:
           command -v xvfb-run || { sudo apt-get update && sudo apt-get install -y xvfb; }
           xvfb-run -a python3 scripts/smoke.py --headed "${RUNNER_TEMP}/smoke/chrome"
 
+      # Named by build key: the plan looks it up to skip rebuilding the same key,
+      # and the release workflow publishes it. Kept for the 90-day maximum.
       - name: Upload release files
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release
+          name: release-${{ needs.plan.outputs.key }}
+          retention-days: 90
           path: |
             build/release/mosaic-browser-${{ env.VERSION }}-linux-x64.tar.xz
             build/release/mosaic-browser-${{ env.VERSION }}-linux-x64.tar.xz.sha256
@@ -299,28 +349,3 @@ jobs:
             build/release/mosaic-browser-${{ env.VERSION }}-linux-x64.tar.xz
             build/release/version.json
 
-  release:
-    runs-on: ubuntu-24.04
-    needs: [prep, package]
-    # Explicit status check: with the implicit success(), the build parts that
-    # were skipped upstream would skip this job too.
-    if: ${{ !cancelled() && !failure() && needs.package.result == 'success' && github.ref_type == 'tag' }}
-    permissions:
-      contents: write
-    env:
-      VERSION: ${{ needs.prep.outputs.version }}
-    steps:
-      - name: Download release files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release
-          path: release
-
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "${VERSION}" release/* \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${VERSION}" \
-            --notes "Verify with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`."

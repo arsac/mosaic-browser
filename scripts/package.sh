@@ -39,6 +39,7 @@ cp "${_root}/LICENSE" "${_root}/THIRD-PARTY.md" "${_release_dir}/${_name}/"
 cat > "${_release_dir}/version.json" <<JSON
 {
   "version": "${_version}",
+  "build_key": "$("${_root}/scripts/build-key.sh")",
   "chromium_version": "${CHROMIUM_VERSION}",
   "uc_tag": "${UC_TAG}",
   "uc_commit": "${UC_COMMIT}",
