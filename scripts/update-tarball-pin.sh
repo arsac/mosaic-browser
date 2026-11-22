@@ -1,7 +1,9 @@
 #!/bin/bash
 # Point CHROMIUM_TARBALL_SHA256 at the source tarball for the Chromium version
 # versions.env pins. Renovate runs it after moving UC_TAG. It fails while the
-# tarball is not published yet, and Renovate tries again on its next run.
+# tarball is not published yet; with prCreation not-pending (see
+# .renovaterc.json5) that failure blocks the pull request instead of shipping a
+# stale pin, and Renovate retries on its next run.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
