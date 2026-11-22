@@ -27,12 +27,11 @@ jobs:
     runs-on: ubuntu-24.04
     # A workflow_run workflow gets write access whatever the triggering run
     # had, so only this repository's own successful push or dispatch runs are
-    # considered, never pull-request ones. The run is checked again below,
-    # which also covers a dispatched run id.
+    # considered. The run is checked again below, which also covers a
+    # dispatched run id.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event != 'pull_request' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
     # GITHUB_TOKEN only reads; the release is created with the bot's token.
     permissions:

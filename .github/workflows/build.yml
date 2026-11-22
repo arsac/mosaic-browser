@@ -12,27 +12,19 @@ name: build
 # (scripts/build-key.sh) already released, or built on main, is not built again
 # unless a dispatch forces it.
 # Otherwise the build is smoked, uploaded as release-<key> and attested; the
-# release workflow then publishes it. A pull request that touches the build
-# inputs, or a dispatch with prepare_only, runs only prep: every pin resolves,
-# every patch applies, gn accepts the tree and the patched sources compile. A
-# dispatch with resume_from_run starts from the tree a failed run saved (same
-# ungoogled tag, tarball and ninja), redoing only the patches that changed.
+# release workflow then publishes it. A dispatch with prepare_only runs only
+# prep: every pin resolves, every patch applies, gn accepts the tree and the
+# patched sources compile. A dispatch with resume_from_run starts from the tree
+# a failed run saved (same ungoogled tag, tarball and ninja), redoing only the
+# patches that changed.
 
 on:
   push:
     branches: [main]
-  pull_request:
-    paths:
-      - versions.env
-      - flags.gn
-      - patches/**
-      - scripts/**
-      - docker/**
-      - .github/**
   workflow_dispatch:
     inputs:
       prepare_only:
-        description: Stop after prep (the pull-request gate)
+        description: Stop after prep (pins, patches, gn and the patched sources)
         type: boolean
         default: false
       resume_from_run:
@@ -92,7 +84,7 @@ jobs:
             echo "chromium_version=${CHROMIUM_VERSION}"
           } >> "$GITHUB_OUTPUT"
           built=""
-          if [ "${GITHUB_EVENT_NAME}" = pull_request ] || [ "${PREPARE_ONLY}" = true ]; then
+          if [ "${PREPARE_ONLY}" = true ]; then
             mode=prep
           else
             if [ "${FORCE}" != true ]; then
