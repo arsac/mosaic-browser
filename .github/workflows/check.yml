@@ -19,11 +19,6 @@ jobs:
       - name: Lint stealth patches
         run: scripts/lint-patches.sh
 
-      # Same check the forge runs on pull requests: a broken pin that reaches
-      # main costs a build before it is caught.
-      - name: Pins resolve
-        run: scripts/verify-pins.sh
-
       - name: Shellcheck
         run: shellcheck -x scripts/*.sh .github/scripts/*.sh
 
