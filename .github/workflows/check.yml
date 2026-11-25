@@ -20,7 +20,11 @@ jobs:
         run: scripts/lint-patches.sh
 
       - name: Shellcheck
-        run: shellcheck -x scripts/*.sh .renovate/*.sh .github/scripts/*.sh
+        # .renovate/ holds the post-upgrade hooks, which are private and never
+        # published: nullglob lets the same command work on either side.
+        run: |
+          shopt -s nullglob
+          shellcheck -x scripts/*.sh .renovate/*.sh .github/scripts/*.sh
 
       - name: Python syntax
         run: python3 -m py_compile scripts/smoke.py scripts/deps.py
