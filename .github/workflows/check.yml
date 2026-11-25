@@ -20,7 +20,7 @@ jobs:
         run: scripts/lint-patches.sh
 
       - name: Shellcheck
-        run: shellcheck -x scripts/*.sh .github/scripts/*.sh
+        run: shellcheck -x scripts/*.sh .renovate/*.sh .github/scripts/*.sh
 
       - name: Python syntax
         run: python3 -m py_compile scripts/smoke.py scripts/deps.py
