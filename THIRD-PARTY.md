@@ -54,8 +54,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## cuttle (MIT)
 
 `patches/stealth/` is cuttle's stealth patch series (`packages/browser/patches`),
-copied unchanged at the commit pinned in `versions.env`. The way the build
-prepares the tree and configures it is ported from cuttle's
+copied unchanged; the source form is published at
+https://github.com/arsac/mosaic-browser/tree/main/patches/stealth. The way the
+build prepares the tree and configures it is ported from cuttle's
 `packages/browser/build`: `docker/build.Dockerfile`, `flags.gn`,
 `scripts/deps.py` and parts of `scripts/shared.sh`.
 

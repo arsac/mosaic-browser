@@ -125,9 +125,8 @@ jobs:
 
       # <UC_TAG>.<n>, n one past the highest release already cut for this tag,
       # as a pre-release: it is promoted by hand once tested. The notes lead
-      # with what changed for consumers (Chromium, ungoogled-chromium, the
-      # stealth series) since the previous release, then GitHub's generated
-      # list of merged changes.
+      # with what changed for consumers (Chromium, ungoogled-chromium) since the
+      # previous release, then GitHub's generated list of merged changes.
       - name: Release
         if: steps.find.outputs.release == 'true'
         env:
@@ -147,19 +146,18 @@ jobs:
               --pattern version.json --dir previous; then
             since=(--notes-start-tag "${prev}")
             changes=""
-            for field in chromium_version:Chromium uc_tag:ungoogled-chromium cuttle_commit:"stealth series (cuttle)"; do
+            for field in chromium_version:Chromium uc_tag:ungoogled-chromium; do
               old=$(jq -r ".${field%%:*} // \"\"" previous/version.json)
               new=$(jq -r ".${field%%:*} // \"\"" release/version.json)
               if [ "${old}" != "${new}" ]; then
                 changes+="- ${field#*:}: \`${old}\` to \`${new}\`"
-                if [ "${field%%:*}" = cuttle_commit ]; then
-                  changes+=" ([diff](https://github.com/glim-sh/cuttle/compare/${old}...${new}))"
-                fi
                 changes+=$'\n'
               fi
             done
             changes="${changes%$'\n'}"
-            changes="${changes:-Same Chromium, ungoogled-chromium and stealth series as ${prev}.}"
+            if [ -z "${changes}" ]; then
+              changes="Same Chromium and ungoogled-chromium as ${prev}."
+            fi
             changes="Since ${prev}:"$'\n\n'"${changes}"
           fi
 

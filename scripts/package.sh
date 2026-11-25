@@ -43,7 +43,6 @@ cat > "${_release_dir}/version.json" <<JSON
   "chromium_version": "${CHROMIUM_VERSION}",
   "uc_tag": "${UC_TAG}",
   "uc_commit": "${UC_COMMIT}",
-  "cuttle_commit": "${CUTTLE_COMMIT}",
   "portablelinux_commit": "${PORTABLELINUX_COMMIT}",
   "source_commit": "$(git -C "${_root}" rev-parse HEAD)"
 }
